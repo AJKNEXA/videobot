@@ -17,7 +17,7 @@ CREATE TABLE IF NOT EXISTS users(
     referred_by INTEGER,
     created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
-CREATE TABLE IF NOT EXISTS videos(
+CREATE TABLE IF NOT EXISTS videos(x
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
     file_id        TEXT NOT NULL,
     file_unique_id TEXT NOT NULL UNIQUE,
