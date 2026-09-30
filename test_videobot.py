@@ -8,9 +8,18 @@ from unittest.mock import AsyncMock, MagicMock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+# Mirror bot.py's proxy sanitize: httpx can't parse bracketed IPv6 entries
+# in this sandbox's proxy vars, and Bot() construction reads them.
+for _var in ("NO_PROXY", "no_proxy", "HTTP_PROXY", "HTTPS_PROXY",
+             "http_proxy", "https_proxy", "ALL_PROXY", "all_proxy"):
+    if "[" in os.environ.get(_var, "") or "]" in os.environ.get(_var, ""):
+        del os.environ[_var]
+
 os.environ["ADMIN_IDS"] = "999"
 import handlers  # noqa: E402
 import keyboards  # noqa: E402
+import bot as botmod  # noqa: E402
+import texts as T  # noqa: E402
 from config import Config  # noqa: E402
 from db import Database  # noqa: E402
 
@@ -325,10 +334,12 @@ async def main():
     c4 = ctx_for()
     await handlers.broadcast_msg_received(msg_update(admin, "Final msg"), c4)
     q2 = cq_update(admin, "broadcast:send")
+    n_users = len(db.all_user_ids())
+    sent_before = bot.send_message.await_count
     st = await handlers.broadcast_confirm_cb(q2, c4)
     check("broadcast send -> END", st == handlers.ConversationHandler.END)
-    n_users = len(db.all_user_ids())
-    check("sent to all users", bot.send_message.await_count == n_users)
+    check("sent to all users",
+          bot.send_message.await_count == sent_before + n_users)
     check("done report shown",
           "Broadcast done" in
           q2.callback_query.message.reply_html.call_args[0][0])
@@ -339,6 +350,66 @@ async def main():
     st = await handlers.broadcast_confirm_cb(q5, c5)
     check("broadcast cancel -> END", st == handlers.ConversationHandler.END)
     check("draft cleared on cancel", "broadcast" not in c5.user_data)
+
+    # ---- referral join notification ----
+    notify_bot = FakeBot()
+    nctx = FakeContext(notify_bot, db, cfg)
+    referrer = FakeUser(1001, "ref1", "Ref1")
+    await handlers.start(msg_update(referrer, "/start"), nctx)
+    before = notify_bot.send_message.await_count
+    joiner = FakeUser(1002, "join1", "Join1")
+    await handlers.start(msg_update(joiner, "/start ref_1001"), nctx)
+    check("referrer notified on join",
+          notify_bot.send_message.await_count == before + 1)
+    nkwargs = notify_bot.send_message.call_args[1]
+    check("notify goes to referrer", nkwargs.get("chat_id") == 1001)
+    check("notify text mentions join",
+          "Someone joined using your referral link" in nkwargs.get("text", ""))
+    check("notify shows progress", "1/3" in nkwargs.get("text", ""))
+
+    # same joiner pressing /start again -> no second notification
+    before = notify_bot.send_message.await_count
+    await handlers.start(msg_update(joiner, "/start ref_1001"), nctx)
+    check("no duplicate notify on re-start",
+          notify_bot.send_message.await_count == before)
+
+    # texts: referral_joined variants
+    check("referral_joined limited", "2</b> more" in T.referral_joined(1, 3))
+    check("referral_joined unlocked",
+          "Unlimited videos unlocked" in T.referral_joined(3, 3))
+
+    # ---- webhook app: /health + update route ----
+    from aiohttp.test_utils import TestClient, TestServer
+    from telegram import Bot
+    stub = MagicMock()
+    stub.bot = Bot(token="123456:FAKETOKEN")  # no network on construct
+    stub.process_update = AsyncMock()
+    cfg.bot_token = "123456:FAKETOKEN"
+    web_app = botmod._build_web_app(stub, cfg)
+    client = TestClient(TestServer(web_app))
+    await client.start_server()
+    try:
+        r = await client.get("/health")
+        check("health 200", r.status == 200)
+        check("health body ok", (await r.json()).get("ok") is True)
+        r = await client.post(
+            "/123456:FAKETOKEN",
+            json={"update_id": 9, "message": {
+                "message_id": 1, "date": 1720000000,
+                "chat": {"id": 4242, "type": "private"},
+                "from": {"id": 4242, "is_bot": False, "first_name": "T"},
+                "text": "hello"}})
+        check("webhook POST 200", r.status == 200)
+        check("update processed", stub.process_update.await_count == 1)
+        r = await client.post("/123456:FAKETOKEN", data="{bad json",
+                              headers={"Content-Type": "application/json"})
+        check("webhook bad body 400", r.status == 400)
+        r = await client.get("/")
+        check("root 404", r.status == 404)
+        r = await client.post("/wrong-path", json={"update_id": 1})
+        check("wrong path 404", r.status == 404)
+    finally:
+        await client.close()
 
     print(f"\nALL {len(PASS)} VIDEOBOT ASSERTIONS PASSED")
 

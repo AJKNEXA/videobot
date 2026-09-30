@@ -67,6 +67,20 @@ def _status_line(db: Database, cfg: Config, uid: int) -> str:
 
 
 # ============================== user ==============================
+async def _notify_referrer(context, ref_id: int, db: Database,
+                         cfg: Config) -> None:
+    """Tell the referrer someone joined via their link (best-effort)."""
+    refs = db.count_referrals(ref_id)
+    try:
+        await context.bot.send_message(
+            chat_id=ref_id,
+            text=T.referral_joined(refs, cfg.referrals_needed),
+            parse_mode="HTML",
+        )
+    except TelegramError:
+        log.warning("Could not notify referrer %s of new join", ref_id)
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     db = _db(context)
@@ -75,7 +89,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ref = None
     if ref and not db.get_user(ref):
         ref = None
-    db.get_or_create_user(user.id, user.username, ref)
+    is_new, _ = db.get_or_create_user(user.id, user.username, ref)
+    if is_new and ref:
+        # genuine new join via someone's link — notify the referrer
+        await _notify_referrer(context, ref, db, _cfg(context))
     await update.message.reply_html(
         T.welcome(user.first_name,
                   _status_line(db, _cfg(context), user.id),

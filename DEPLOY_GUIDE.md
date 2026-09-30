@@ -55,8 +55,10 @@ Render free services 15 min khali rehne par so jati hain. Is se bachne ke
 liye har 5 min mein aik ping jayegi:
 
 1. [uptimerobot.com](https://uptimerobot.com) par free account banao.
-2. **Add Monitor** → Type **HTTP(s)** → URL mein apna Render URL dalo
-   (`https://videobot-abcd.onrender.com/`) → Interval **5 minutes** → Create.
+2. **Add Monitor** → Type **HTTP(s)** → URL mein apna Render URL **plus
+   `/health`** dalo (`https://videobot-abcd.onrender.com/health`) →
+   Interval **5 minutes** → Create. (Sirf `/` par 404 ata hai — `/health`
+   par 200 OK milta hai, isi liye yehi URL use karo.)
 
 Bas! Ab bot 24/7 online rahega.
 

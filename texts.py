@@ -56,6 +56,22 @@ def invite_card(link: str, refs: int, needed: int) -> str:
     )
 
 
+def referral_joined(refs: int, needed: int) -> str:
+    """Message sent to the referrer when someone joins via their link."""
+    if refs >= needed:
+        extra = "🔓 <b>Unlimited videos unlocked!</b> 🎉"
+    else:
+        more = needed - refs
+        extra = (f"Invite <b>{more}</b> more "
+                 f"friend{'s' if more != 1 else ''} to unlock "
+                 f"🔓 <b>unlimited</b> videos!")
+    return (
+        "🎉 <b>Someone joined using your referral link!</b>\n\n"
+        f"👥 Your referrals: <b>{refs}/{needed}</b>\n\n"
+        f"{extra}"
+    )
+
+
 # ------------------------------ broadcast (admin) ------------------------------
 BROADCAST_ASK_MSG = (
     "📢 <b>Broadcast</b>\n\n"
