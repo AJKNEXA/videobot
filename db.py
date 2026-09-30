@@ -17,7 +17,7 @@ CREATE TABLE IF NOT EXISTS users(
     referred_by INTEGER,
     created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
-CREATE TABLE IF NOT EXISTS videos(x
+CREATE TABLE IF NOT EXISTS videos(
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
     file_id        TEXT NOT NULL,
     file_unique_id TEXT NOT NULL UNIQUE,
@@ -68,21 +68,14 @@ class Database:
     def __init__(self, path: str = "videobot.db", dsn: str | None = None) -> None:
         self._lock = threading.Lock()
         self._pg = bool(dsn)
+        self._dsn = dsn
         if self._pg:
-            import psycopg
-            from psycopg.rows import dict_row
-            self._conn = psycopg.connect(dsn, row_factory=dict_row,
-                                         autocommit=True)
+            self._conn = None
+            self._connect_pg()
             self._today = TODAY_PG
-            with self._lock:
-                cur = self._conn.cursor()
-                try:
-                    cur.execute("SET TIME ZONE 'Asia/Karachi'")
-                    for stmt in SCHEMA_PG.split(";"):
-                        if stmt.strip():
-                            cur.execute(stmt)
-                finally:
-                    cur.close()
+            for stmt in SCHEMA_PG.split(";"):
+                if stmt.strip():
+                    self._execute(stmt)
         else:
             import sqlite3
             self._conn = sqlite3.connect(path, check_same_thread=False)
@@ -95,28 +88,80 @@ class Database:
     def _sql(self, sql: str) -> str:
         return sql.replace("?", "%s") if self._pg else sql
 
+    def _connect_pg(self):
+        """(Re)establish the Postgres connection.
+
+        The Supabase/Supavisor pooler (and plain idle timeouts) can sever a
+        long-lived connection at any time; the bot must heal itself instead
+        of failing every query until the next restart.
+        """
+        import psycopg
+        from psycopg.rows import dict_row
+        old = self._conn
+        self._conn = None
+        if old is not None:
+            try:
+                old.close()
+            except Exception:  # noqa: BLE001 — best effort
+                pass
+        self._conn = psycopg.connect(self._dsn, row_factory=dict_row,
+                                     autocommit=True, connect_timeout=10)
+        cur = self._conn.cursor()
+        try:
+            cur.execute("SET TIME ZONE 'Asia/Karachi'")
+        finally:
+            cur.close()
+
+    def _ensure_pg(self):
+        """Reconnect if the pooler/idle timeout closed our connection."""
+        try:
+            dead = self._conn is None or self._conn.closed
+        except Exception:  # noqa: BLE001 — health check itself failed
+            dead = True
+        if dead:
+            self._connect_pg()
+
+    def _pg_once(self, op):
+        cur = self._conn.cursor()
+        try:
+            return op(cur)
+        finally:
+            cur.close()
+
+    def _pg_with_retry(self, op):
+        """Run op(cursor); on OperationalError reconnect once and retry."""
+        import psycopg
+        with self._lock:
+            self._ensure_pg()
+            try:
+                return self._pg_once(op)
+            except psycopg.OperationalError:
+                # pooler killed the connection mid-query — reconnect, retry
+                self._connect_pg()
+                return self._pg_once(op)
+
     def _fetchone(self, sql, params=()):
         if self._pg:
-            with self._lock:
-                cur = self._conn.cursor()
-                try:
-                    cur.execute(self._sql(sql), params)
-                    return cur.fetchone()
-                finally:
-                    cur.close()
+            query = self._sql(sql)
+
+            def op(cur):
+                cur.execute(query, params)
+                return cur.fetchone()
+
+            return self._pg_with_retry(op)
         with self._lock:
             row = self._conn.execute(sql, params).fetchone()
             return dict(row) if row else None
 
     def _fetchall(self, sql, params=()):
         if self._pg:
-            with self._lock:
-                cur = self._conn.cursor()
-                try:
-                    cur.execute(self._sql(sql), params)
-                    return cur.fetchall()
-                finally:
-                    cur.close()
+            query = self._sql(sql)
+
+            def op(cur):
+                cur.execute(query, params)
+                return cur.fetchall()
+
+            return self._pg_with_retry(op)
         with self._lock:
             return [dict(r)
                     for r in self._conn.execute(sql, params).fetchall()]
@@ -124,13 +169,13 @@ class Database:
     def _execute(self, sql, params=()) -> int:
         """Execute a write; returns affected rowcount."""
         if self._pg:
-            with self._lock:
-                cur = self._conn.cursor()
-                try:
-                    cur.execute(self._sql(sql), params)
-                    return cur.rowcount
-                finally:
-                    cur.close()
+            query = self._sql(sql)
+
+            def op(cur):
+                cur.execute(query, params)
+                return cur.rowcount
+
+            return self._pg_with_retry(op)
         with self._lock, self._conn:
             cur = self._conn.execute(sql, params)
             return cur.rowcount
@@ -189,17 +234,15 @@ class Database:
         if exists:
             return None
         if self._pg:
-            with self._lock:
-                cur = self._conn.cursor()
-                try:
-                    cur.execute(
-                        "INSERT INTO videos(file_id, file_unique_id,"
-                        " duration, added_by) VALUES(%s,%s,%s,%s)"
-                        " RETURNING id",
-                        (file_id, file_unique_id, duration, added_by))
-                    return cur.fetchone()["id"]
-                finally:
-                    cur.close()
+            def op(cur):
+                cur.execute(
+                    "INSERT INTO videos(file_id, file_unique_id,"
+                    " duration, added_by) VALUES(%s,%s,%s,%s)"
+                    " RETURNING id",
+                    (file_id, file_unique_id, duration, added_by))
+                return cur.fetchone()["id"]
+
+            return self._pg_with_retry(op)
         with self._lock, self._conn:
             cur = self._conn.execute(
                 "INSERT INTO videos(file_id, file_unique_id, duration, added_by)"
