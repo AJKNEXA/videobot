@@ -285,7 +285,7 @@ async def broadcast_msg_received(update: Update,
     else:
         draft["kind"] = "text"
         draft["text"] = msg.text
-    await msg.reply_html(T.BROADCAST_ASK_LINK, parse_mode="HTML")
+    await msg.reply_html(T.BROADCAST_ASK_LINK)
     return BROADCAST_LINK
 
 
@@ -298,13 +298,11 @@ async def broadcast_link_received(update: Update,
                                   context: ContextTypes.DEFAULT_TYPE):
     raw = (update.message.text or "").strip()
     if "|" not in raw:
-        await update.message.reply_html(T.BROADCAST_BAD_LINK,
-                                        parse_mode="HTML")
+        await update.message.reply_html(T.BROADCAST_BAD_LINK)
         return BROADCAST_LINK
     label, url = [p.strip() for p in raw.split("|", 1)]
     if not label or not url:
-        await update.message.reply_html(T.BROADCAST_BAD_LINK,
-                                        parse_mode="HTML")
+        await update.message.reply_html(T.BROADCAST_BAD_LINK)
         return BROADCAST_LINK
     if not url.startswith(("http://", "https://")):
         url = "https://" + url.lstrip("/")
