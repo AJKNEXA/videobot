@@ -1,6 +1,7 @@
 """Handlers for VideoBot: disappearing protected videos + referrals."""
 import asyncio
 import logging
+import os
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.error import TelegramError
@@ -39,6 +40,31 @@ def _is_admin(uid: int, cfg: Config) -> bool:
 
 def _invite_link(context, uid: int) -> str:
     return f"https://t.me/{context.bot.username}?start=ref_{uid}"
+
+
+# Branded invite card shown with the referral link. Forwarding the photo
+# carries the bot's pic along with the link.
+_INVITE_PHOTO = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                             "assets", "invite.png")
+
+
+async def _send_invite_card(message, context, uid: int) -> None:
+    """Send the invite card: branded photo + referral-link caption.
+
+    Falls back to plain text if the image file is missing so the invite
+    flow never breaks.
+    """
+    db, cfg = _db(context), _cfg(context)
+    refs = db.count_referrals(uid)
+    caption = T.invite_card(_invite_link(context, uid),
+                            refs, cfg.referrals_needed)
+    kb = keyboards.invite_only(_share_link(context, uid))
+    if os.path.isfile(_INVITE_PHOTO):
+        with open(_INVITE_PHOTO, "rb") as fh:
+            await message.reply_photo(photo=fh, caption=caption,
+                                      parse_mode="HTML", reply_markup=kb)
+    else:
+        await message.reply_html(caption, reply_markup=kb)
 
 
 def _share_link(context, uid: int) -> str:
@@ -173,13 +199,8 @@ async def bottom_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                    update.message.chat_id,
                                    update.message.reply_html)
     elif text == "👥 Invite Friends":
-        db, cfg = _db(context), _cfg(context)
-        refs = db.count_referrals(user.id)
-        await update.message.reply_html(
-            T.invite_card(_invite_link(context, user.id),
-                          refs, cfg.referrals_needed),
-            reply_markup=keyboards.invite_only(_share_link(context, user.id)),
-        )
+        await _send_invite_card(update.message, context, user.id)
+            
 
 
 # ============================== admin ==============================
